@@ -503,7 +503,9 @@ async function readOgg(file){
       off+=27+ns+plen;
       if(off>80*1024*1024)break;
     }
-    const b=packets[1];if(!b)return out;
+    const b=packets[1];
+    if(!b){out.diag='Pakete: '+packets.length+', Seiten bis '+off;return out;}
+    const keys=[];
     let p=0;
     const head=String.fromCharCode(...b.subarray(0,8));
     if(head==='OpusTags')p=8;else if(b[0]===3&&String.fromCharCode(...b.subarray(1,7))==='vorbis')p=7;else return out;
@@ -514,6 +516,7 @@ async function readOgg(file){
       const l=dv.getUint32(p,true);p+=4;
       let q=p;while(q<p+l&&b[q]!==61)q++;
       const key=u8s(b,p,q).toUpperCase();
+      keys.push(key.slice(0,24)+(l>2000?'('+Math.round(l/1000)+'k)':''));
       if(key==='METADATA_BLOCK_PICTURE'){
         if(!out.cover){try{out.cover=parsePicBlock(b64u8(u8s(b,q+1,p+l)));}catch(e){}}
       }else if(key==='COVERART'){
@@ -524,7 +527,9 @@ async function readOgg(file){
       }
       p+=l;
     }
-  }catch(e){}
+    out.diag='Tags: '+keys.join(' ')+' | Paket '+b.length+'B';
+    if(!out.cover){const c=scanImage(b);if(c){out.cover=c;out.diag+=' (Bild per Suche)';}}
+  }catch(e){out.diag='Fehler: '+e.message;}
   return out;
 }
 /* MP4-FLAC END */
@@ -552,7 +557,7 @@ async function addFiles(fileList){
     try{
       const tags=await readTags(f);
       const base=f.name.replace(/\.[^.]+$/,'');
-      const meta={fileName:f.name,size:f.size,title:tags.title||base,artist:tags.artist||'',album:tags.album||'',cover:tags.cover||null,coverV:3,duration:await getDuration(f),added:Date.now()+i,fav:false};
+      const meta={fileName:f.name,size:f.size,title:tags.title||base,artist:tags.artist||'',album:tags.album||'',cover:tags.cover||null,coverV:4,duration:await getDuration(f),added:Date.now()+i,fav:false};
       tracks.push(await saveTrack(meta,f));
       n++;
     }catch(e){failed++;if(e&&e.name==='QuotaExceededError'){toast('Speicher voll – Import abgebrochen',4000);break;}}
@@ -564,16 +569,16 @@ async function addFiles(fileList){
 }
 
 /* ---------- Cover nachladen ---------- */
-let lastMiss=[];
+let lastMiss=[],lastDiag='';
 async function rescanCovers(force){
-  let n=0;lastMiss=[];
+  let n=0;lastMiss=[];lastDiag='';
   for(const t of tracks){
-    if(t.stream||t.cover||(t.coverV===3&&!force))continue;
+    if(t.stream||t.cover||(t.coverV===4&&!force))continue;
     try{
       const blob=await req(db.transaction('blobs').objectStore('blobs').get(t.id));
-      if(blob){const tags=await readTags(blob);t.fmt=tags.fmt||'';if(tags.cover){t.cover=tags.cover;n++;}else lastMiss.push(tags.fmt||'?');if(!t.album&&tags.album)t.album=tags.album;}
+      if(blob){const tags=await readTags(blob);t.fmt=tags.fmt||'';if(tags.cover){t.cover=tags.cover;n++;}else{lastMiss.push(tags.fmt||'?');if(!lastDiag)lastDiag=tags.diag||'';}if(!t.album&&tags.album)t.album=tags.album;}
     }catch(e){}
-    t.coverV=3;await putTrack(t);
+    t.coverV=4;await putTrack(t);
   }
   if(n){render();const c=curTrack();if(c)updateNow(c);}
   return n;
@@ -1139,7 +1144,7 @@ $('#nbCreate').onclick=()=>openSheet('Erstellen',[
   {label:'🎶 Neue Playlist',fn:()=>{tab='pl';openPl=null;openGrp=null;render();newPlaylist();}},
   {label:'＋ Songs hinzufügen',fn:()=>$('#fi').click()},
   {label:'📁 Ordner hinzufügen',fn:()=>$('#fo').click()},
-  {label:'🖼 Cover neu einlesen',fn:async()=>{toast('Suche Cover…',99999);const n=await rescanCovers(true);toast((n?`${n} Cover gefunden`:'Keine neuen Cover gefunden')+(lastMiss.length?` · ${lastMiss.length} ohne Cover [${[...new Set(lastMiss)].join(', ')}]`:''),9000);}}
+  {label:'🖼 Cover neu einlesen',fn:async()=>{toast('Suche Cover…',99999);const n=await rescanCovers(true);toast((n?`${n} Cover gefunden`:'Keine neuen Cover gefunden')+(lastMiss.length?` · ${lastMiss.length} ohne Cover [${[...new Set(lastMiss)].join(', ')}] ${lastDiag.slice(0,220)}`:''),14000);}}
 ]);
 $('#sideNew').onclick=()=>{tab='pl';openPl=null;render();newPlaylist();};
 $('#now').onclick=()=>$('#full').classList.add('show');
