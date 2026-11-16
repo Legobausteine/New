@@ -91,6 +91,11 @@ input[type=range]::-moz-range-thumb{width:15px;height:15px;border:0;border-radiu
 .eqrow{display:flex;align-items:center;gap:10px;margin:12px 0;font-size:14px}
 .eqrow span:first-child{width:60px}.eqrow span:last-child{width:46px;text-align:right;color:var(--mut)}
 .presets{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.cvrow{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.cvthumb{width:84px;height:84px;border-radius:12px;background:var(--card2) center/cover no-repeat;display:grid;place-items:center;font-size:34px;color:var(--mut);flex:none}
+.cvbtns{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.cvf{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+.cvres{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 8px}
 footer{font-size:11px;color:var(--mut);text-align:center}
 /* Vollbild-Player */
 #full{position:fixed;inset:0;z-index:12;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:calc(20px + env(safe-area-inset-top)) 22px calc(20px + env(safe-area-inset-bottom));background:linear-gradient(180deg,var(--fc,#5a3214) 0%,#14110f 78%)}
@@ -260,6 +265,8 @@ footer{font-size:11px;color:var(--mut);text-align:center}
 <input type="file" id="fi" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.opus,.weba" multiple hidden>
 <input type="file" id="fo" webkitdirectory multiple hidden>
 <input type="file" id="fc" accept="image/*" hidden>
+<input type="file" id="cc" accept="image/*" hidden>
+<input type="file" id="cf" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.opus,.weba" hidden>
 <audio id="audio" preload="auto"></audio>
 
 <script>
@@ -874,7 +881,7 @@ async function removeFromPl(id){
 }
 function itemMenu(t){
   const o=[{label:'▶ Als Nächstes spielen',fn:()=>playNext(t)},{label:'☰ Ans Ende der Warteschlange',fn:()=>enqueue(t)}];
-  if(!t.stream){o.push({label:'＋ Zu Playlist…',fn:()=>addToPlSheet(t)});o.push({label:'🔍 Cover online suchen',fn:()=>coverSearch(t)});o.push({label:'🖼 Cover aus Galerie',fn:()=>{coverFor=t;$('#fc').click();}});}
+  if(!t.stream){o.push({label:'＋ Zu Playlist…',fn:()=>addToPlSheet(t)});o.push({label:'🔍 Cover online suchen',fn:()=>coverSearch(t)});o.push({label:'🖼 Cover aus Galerie',fn:()=>{coverFor=t;$('#fc').click();}});o.push({label:'🎧 In MP3 umwandeln (mit Cover)',fn:async()=>{const blob=await req(db.transaction('blobs').objectStore('blobs').get(t.id));if(!blob){toast('Datei nicht gefunden');return;}openConverter({blob,name:t.fileName,title:t.title,artist:t.artist,album:t.album,cover:t.cover});}});}
   openSheet(t.title,o);
 }
 function openSheet(title,opts){
@@ -1177,12 +1184,212 @@ if('mediaSession' in navigator){
   try{ms.setActionHandler('seekto',d=>{audio.currentTime=d.seekTime;});}catch(_){}
 }
 
+/* ---------- MP3-Konverter (mit Coverbild) ---------- */
+const LAME_URLS=['https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js','https://unpkg.com/lamejs@1.2.1/lame.min.js'];
+const LAME_CACHE='klangkiste-lib',LAME_KEY='lame.min.js';
+async function loadLame(){
+  if(self.lamejs&&self.lamejs.Mp3Encoder)return;
+  let code=null,cached=false;
+  try{const c=await caches.open(LAME_CACHE);const hit=await c.match(LAME_KEY);if(hit){code=await hit.text();cached=true;}}catch(e){}
+  if(!code){
+    for(const u of LAME_URLS){
+      try{
+        const r=await fetch(u);if(!r.ok)continue;
+        code=await r.text();
+        try{const c=await caches.open(LAME_CACHE);await c.put(LAME_KEY,new Response(code,{headers:{'Content-Type':'text/javascript'}}));}catch(e){}
+        break;
+      }catch(e){}
+    }
+  }
+  if(!code)throw new Error('MP3-Encoder konnte nicht geladen werden – einmal mit Internet versuchen, danach geht es offline.');
+  await new Promise((res,rej)=>{
+    const u=URL.createObjectURL(new Blob([code],{type:'text/javascript'}));
+    const s=document.createElement('script');
+    s.onload=()=>{URL.revokeObjectURL(u);res();};
+    s.onerror=()=>{URL.revokeObjectURL(u);rej(new Error('MP3-Encoder fehlerhaft'));};
+    s.src=u;document.head.appendChild(s);
+  });
+  if(!(self.lamejs&&self.lamejs.Mp3Encoder)){
+    if(cached){try{(await caches.open(LAME_CACHE)).delete(LAME_KEY);}catch(e){}}
+    throw new Error('MP3-Encoder fehlerhaft');
+  }
+}
+
+/* ID3v2.3-Tag mit Titel, Künstler, Album und Coverbild */
+const u32=n=>[(n>>>24)&255,(n>>>16)&255,(n>>>8)&255,n&255];
+const synsafe=n=>[(n>>21)&127,(n>>14)&127,(n>>7)&127,n&127];
+function utf16(s){const o=[0xFF,0xFE];for(let i=0;i<s.length;i++){const c=s.charCodeAt(i);o.push(c&255,c>>8);}return o;}
+function id3Frame(id,d){const h=new Uint8Array(10);for(let i=0;i<4;i++)h[i]=id.charCodeAt(i);h.set(u32(d.length),4);return catU8([h,d]);}
+function id3Text(id,s){return s?id3Frame(id,Uint8Array.from([1,...utf16(s)])):null;}
+function buildID3(m){
+  const fr=[id3Text('TIT2',m.title),id3Text('TPE1',m.artist),id3Text('TALB',m.album)];
+  if(m.cover){
+    const head=Uint8Array.from([0,...[...m.cover.mime].map(c=>c.charCodeAt(0)),0,3,0]);
+    fr.push(id3Frame('APIC',catU8([head,m.cover.bytes])));
+  }
+  const body=catU8(fr.filter(Boolean));
+  if(!body.length)return new Uint8Array(0);
+  return catU8([Uint8Array.from([0x49,0x44,0x33,3,0,0,...synsafe(body.length)]),body]);
+}
+function stripTags(u8){
+  let s=0,e=u8.length;
+  if(u8[0]===0x49&&u8[1]===0x44&&u8[2]===0x33){s=10+((u8[6]<<21)|(u8[7]<<14)|(u8[8]<<7)|u8[9])+((u8[5]&0x10)?10:0);}
+  if(e-128>=s&&u8[e-128]===0x54&&u8[e-127]===0x41&&u8[e-126]===0x47)e-=128;
+  return u8.subarray(Math.min(s,e),e);
+}
+async function prepCover(blob){
+  try{
+    const bmp=await createImageBitmap(blob);
+    const m=Math.min(1,600/Math.max(bmp.width,bmp.height));
+    const w=Math.max(1,Math.round(bmp.width*m)),h=Math.max(1,Math.round(bmp.height*m));
+    const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+    const g=cv.getContext('2d');g.fillStyle='#000';g.fillRect(0,0,w,h);g.drawImage(bmp,0,0,w,h);
+    const out=await new Promise(r=>cv.toBlob(r,'image/jpeg',.9));
+    if(out)return{bytes:new Uint8Array(await out.arrayBuffer()),mime:'image/jpeg'};
+  }catch(e){}
+  return{bytes:new Uint8Array(await blob.arrayBuffer()),mime:blob.type==='image/png'?'image/png':'image/jpeg'};
+}
+
+/* Dekodieren + Kodieren */
+const LAME_RATES=[8000,11025,12000,16000,22050,24000,32000,44100,48000];
+async function decodeAudio(file){
+  const AC=self.AudioContext||self.webkitAudioContext;
+  if(!AC)throw new Error('Dieser Browser kann kein Audio dekodieren');
+  const buf=await file.arrayBuffer();
+  let ac;try{ac=new AC({sampleRate:44100});}catch(e){ac=new AC();}
+  try{
+    let ab=await new Promise((res,rej)=>{const p=ac.decodeAudioData(buf,res,rej);if(p&&p.catch)p.catch(rej);});
+    if(!LAME_RATES.includes(ab.sampleRate)){
+      const ch=ab.numberOfChannels>1?2:1;
+      const oc=new OfflineAudioContext(ch,Math.ceil(ab.duration*44100),44100);
+      const src=oc.createBufferSource();src.buffer=ab;src.connect(oc.destination);src.start();
+      ab=await oc.startRendering();
+    }
+    return ab;
+  }finally{try{ac.close();}catch(e){}}
+}
+async function encodeMp3(ab,kbps,onProg){
+  const ch=ab.numberOfChannels>1?2:1,sr=ab.sampleRate;
+  const L=ab.getChannelData(0),R=ch===2?ab.getChannelData(1):null;
+  const enc=new lamejs.Mp3Encoder(ch,sr,kbps);
+  const BS=1152,n=L.length,parts=[];
+  const cv=x=>x<-1?-32768:x>1?32767:(x<0?x*32768:x*32767);
+  for(let i=0,k=0;i<n;i+=BS,k++){
+    const len=Math.min(BS,n-i),a=new Int16Array(len),b=ch===2?new Int16Array(len):null;
+    for(let j=0;j<len;j++){a[j]=cv(L[i+j]);if(b)b[j]=cv(R[i+j]);}
+    const o=ch===2?enc.encodeBuffer(a,b):enc.encodeBuffer(a);
+    if(o.length)parts.push(new Uint8Array(o));
+    if(k%150===0){onProg(i/n);await new Promise(r=>setTimeout(r,0));}
+  }
+  const f=enc.flush();if(f.length)parts.push(new Uint8Array(f));
+  return parts;
+}
+
+/* Oberfläche */
+let cvState=null;
+const cleanName=s=>s.replace(/[\\/:*?"<>|]+/g,'').replace(/\s+/g,' ').trim();
+function openConverter(src){
+  const isMp3=/\.mp3$/i.test(src.name||'')||src.blob.type==='audio/mpeg';
+  const S=cvState={src,title:src.title||'',artist:src.artist||'',album:src.album||'',cover:src.cover||null,kbps:192,mode:isMp3?'tags':'enc',busy:false,thumbUrl:null};
+  const nodes=[];
+  const mb=(src.blob.size/1048576).toFixed(1);
+  nodes.push(el('div','note',`Quelle: ${src.name||'Audio'} · ${mb} MB`));
+  const row=el('div','cvrow');
+  const thumb=el('div','cvthumb');
+  const setThumbCv=()=>{
+    if(S.thumbUrl){URL.revokeObjectURL(S.thumbUrl);S.thumbUrl=null;}
+    if(S.cover){S.thumbUrl=URL.createObjectURL(S.cover);thumb.style.backgroundImage=`url("${S.thumbUrl}")`;thumb.textContent='';}
+    else{thumb.style.backgroundImage='';thumb.textContent='♪';}
+  };
+  S.refreshCover=setThumbCv;setThumbCv();
+  const cb=el('div','cvbtns');
+  const pick=el('button','chip','🖼 Coverbild wählen');pick.onclick=()=>$('#cc').click();
+  const none=el('button','chip','✕ Kein Cover');none.onclick=()=>{S.cover=null;setThumbCv();};
+  cb.append(pick,none);row.append(thumb,cb);nodes.push(row);
+  const f=el('div','cvf');
+  [['title','Titel'],['artist','Künstler'],['album','Album']].forEach(([k,ph])=>{
+    const i=el('input');i.type='text';i.placeholder=ph;i.value=S[k];i.oninput=()=>{S[k]=i.value;};f.appendChild(i);
+  });
+  nodes.push(f);
+  const modes=el('div','presets');
+  const mChips=[];
+  if(isMp3){
+    [['tags','Nur Cover einbetten (verlustfrei)'],['enc','Neu kodieren']].forEach(([m,l])=>{
+      const c=el('button','chip'+(S.mode===m?' act':''),l);
+      c.onclick=()=>{S.mode=m;mChips.forEach(([mm,cc])=>cc.classList.toggle('act',mm===m));qual.style.display=m==='enc'?'':'none';};
+      mChips.push([m,c]);modes.appendChild(c);
+    });
+    nodes.push(modes);
+  }
+  const qual=el('div','presets');
+  const qChips=[];
+  [128,192,256,320].forEach(k=>{
+    const c=el('button','chip'+(k===S.kbps?' act':''),k+' kbit/s');
+    c.onclick=()=>{S.kbps=k;qChips.forEach(([kk,cc])=>cc.classList.toggle('act',kk===k));};
+    qChips.push([k,c]);qual.appendChild(c);
+  });
+  qual.style.display=S.mode==='enc'?'':'none';
+  nodes.push(qual);
+  const status=el('div','note','');status.style.display='none';
+  const say=t=>{status.style.display='';status.textContent=t;};
+  nodes.push(status);
+  const res=el('div','cvres');
+  const go=el('button','','🎧 In MP3 umwandeln');
+  go.onclick=async()=>{
+    if(S.busy)return;S.busy=true;go.disabled=true;res.textContent='';
+    try{
+      say('Bereite Cover vor…');
+      const cover=S.cover?await prepCover(S.cover):null;
+      const tag=buildID3({title:S.title.trim(),artist:S.artist.trim(),album:S.album.trim(),cover});
+      let parts;
+      if(S.mode==='tags'){
+        say('Schreibe Tags…');
+        parts=[stripTags(new Uint8Array(await src.blob.arrayBuffer()))];
+      }else{
+        say('Lade MP3-Encoder…');await loadLame();
+        say('Dekodiere Audio…');
+        const ab=await decodeAudio(src.blob);
+        say('Wandle um… 0 %');
+        parts=await encodeMp3(ab,S.kbps,p=>say(`Wandle um… ${Math.round(p*100)} %`));
+      }
+      const base=cleanName([S.artist,S.title].filter(Boolean).join(' - '))||cleanName((src.name||'Song').replace(/\.[^.]+$/,''))||'Song';
+      const file=new File([tag,...parts],base+'.mp3',{type:'audio/mpeg'});
+      say(`Fertig: ${file.name} · ${(file.size/1048576).toFixed(1)} MB`+(cover?' · mit Cover':' · ohne Cover'));
+      const save=el('button','btn','💾 Speichern');
+      save.onclick=()=>{const u=URL.createObjectURL(file);const a=document.createElement('a');a.href=u;a.download=file.name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),60000);};
+      res.appendChild(save);
+      if(navigator.canShare&&navigator.canShare({files:[file]})){
+        const sh=el('button','btn sec','📤 Teilen');
+        sh.onclick=()=>navigator.share({files:[file],title:file.name}).catch(()=>{});
+        res.appendChild(sh);
+      }
+      const add=el('button','btn sec','＋ In Klangkiste');
+      add.onclick=()=>{closeSheet();addFiles([file]);};
+      res.appendChild(add);
+    }catch(e){say('Fehler: '+((e&&e.message)||e));}
+    S.busy=false;go.disabled=false;
+  };
+  nodes.push(go);nodes.push(res);
+  openSheetNodes('MP3-Konverter',nodes);
+}
+$('#cc').onchange=e=>{
+  const f=e.target.files[0];e.target.value='';
+  if(f&&cvState){cvState.cover=f;cvState.refreshCover();}
+};
+$('#cf').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';
+  if(!f)return;
+  const tg=await readTags(f);
+  openConverter({blob:f,name:f.name,title:tg.title||f.name.replace(/\.[^.]+$/,''),artist:tg.artist||'',album:tg.album||'',cover:tg.cover||null});
+};
+
 /* ---------- UI ---------- */
 document.querySelectorAll('.tab,.nb').forEach(b=>b.onclick=()=>{tab=b.dataset.tab==='lib'?'pl':b.dataset.tab;openPl=null;openGrp=null;render();$('#list').scrollTop=0;});
 $('#nbCreate').onclick=()=>openSheet('Erstellen',[
   {label:'🎶 Neue Playlist',fn:()=>{tab='pl';openPl=null;openGrp=null;render();newPlaylist();}},
   {label:'＋ Songs hinzufügen',fn:()=>$('#fi').click()},
   {label:'📁 Ordner hinzufügen',fn:()=>$('#fo').click()},
+  {label:'🎧 MP3-Konverter (mit Coverbild)',fn:()=>$('#cf').click()},
   {label:'🖼 Cover neu einlesen',fn:async()=>{toast('Suche Cover…',99999);const n=await rescanCovers(true);toast((n?`${n} Cover gefunden`:'Keine neuen Cover gefunden')+(lastMiss.length?` · ${lastMiss.length} ohne Cover [${[...new Set(lastMiss)].join(', ')}] ${lastDiag.slice(0,220)}`:''),14000);}}
 ]);
 $('#sideNew').onclick=()=>{tab='pl';openPl=null;render();newPlaylist();};
