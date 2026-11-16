@@ -823,6 +823,34 @@ async function removeTrack(id){
   render();updateInfo();
 }
 
+/* ---------- Doppelte aufräumen ---------- */
+async function cleanDupes(){
+  const nk=x=>(x||'').toLowerCase().replace(/\s+/g,' ').trim();
+  const rank=t=>(t.k===curK?0:1)*2+(t.fav?0:1);
+  const sorted=tracks.slice().sort((a,b)=>rank(a)-rank(b)||a.added-b.added);
+  const keep=[],drop=[];
+  for(const t of sorted){
+    const m=keep.find(k=>nk(k.title)===nk(t.title)&&nk(k.artist)===nk(t.artist)&&(!k.duration||!t.duration||Math.abs(k.duration-t.duration)<=2));
+    if(m)drop.push([t,m]);else keep.push(t);
+  }
+  if(!drop.length){toast('Keine doppelten Songs gefunden',2500);return;}
+  if(!confirm(`${drop.length} doppelte Song${drop.length>1?'s':''} löschen? Pro Song bleibt eine Version erhalten.`))return;
+  for(const [t,m] of drop){
+    const tx=db.transaction(['tracks','blobs'],'readwrite');
+    tx.objectStore('tracks').delete(t.id);tx.objectStore('blobs').delete(t.id);
+    await txDone(tx);
+    if(coverUrls.has(t.id)){URL.revokeObjectURL(coverUrls.get(t.id));coverUrls.delete(t.id);}
+    tracks=tracks.filter(x=>x.id!==t.id);
+    ctx=ctx.filter(x=>x.k!==t.k);
+    for(const pl of playlists){
+      if(pl.ids.includes(t.id)){pl.ids=[...new Set(pl.ids.map(x=>x===t.id?m.id:x))];await putPl(pl);}
+    }
+    if(!m.cover&&t.cover){m.cover=t.cover;await putTrack(m);}
+  }
+  openGrp=null;render();updateInfo();
+  toast(`${drop.length} doppelte Song${drop.length>1?'s':''} gelöscht`,3500);
+}
+
 /* ---------- Playlists ---------- */
 function renderSide(){
   const box=$('#sidepl');box.textContent='';
@@ -1392,6 +1420,7 @@ $('#nbCreate').onclick=()=>openSheet('Erstellen',[
   {label:'＋ Songs hinzufügen',fn:()=>$('#fi').click()},
   {label:'📁 Ordner hinzufügen',fn:()=>$('#fo').click()},
   {label:'🎧 MP3-Konverter (mit Coverbild)',fn:()=>$('#cf').click()},
+  {label:'🧹 Doppelte Songs aufräumen',fn:cleanDupes},
   {label:'🖼 Cover neu einlesen',fn:async()=>{toast('Suche Cover…',99999);const n=await rescanCovers(true);toast((n?`${n} Cover gefunden`:'Keine neuen Cover gefunden')+(lastMiss.length?` · ${lastMiss.length} ohne Cover [${[...new Set(lastMiss)].join(', ')}] ${lastDiag.slice(0,220)}`:''),14000);}}
 ]);
 $('#sideNew').onclick=()=>{tab='pl';openPl=null;render();newPlaylist();};
