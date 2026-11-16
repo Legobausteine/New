@@ -311,14 +311,29 @@ function dec(bytes,enc){
   }catch(e){return '';}
 }
 const synch=(b,o)=>(b[o]<<21)|(b[o+1]<<14)|(b[o+2]<<7)|b[o+3];
+function unsync(b){const o=new Uint8Array(b.length);let j=0;for(let i=0;i<b.length;i++){o[j++]=b[i];if(b[i]===0xFF&&b[i+1]===0x00)i++;}return o.subarray(0,j);}
+function scanImage(b){
+  const n=b.length;
+  for(let i=10;i<n-8;i++){
+    if(b[i]===0xFF&&b[i+1]===0xD8&&b[i+2]===0xFF){
+      for(let j=n-2;j>i+100;j--){if(b[j]===0xFF&&b[j+1]===0xD9)return new Blob([b.slice(i,j+2)],{type:'image/jpeg'});}
+    }
+    if(b[i]===0x89&&b[i+1]===0x50&&b[i+2]===0x4E&&b[i+3]===0x47&&b[i+4]===0x0D){
+      for(let j=n-8;j>i+50;j--){if(b[j]===0x49&&b[j+1]===0x45&&b[j+2]===0x4E&&b[j+3]===0x44)return new Blob([b.slice(i,j+8)],{type:'image/png'});}
+    }
+  }
+  return null;
+}
 async function readID3(file){
   const out={};
   try{
     const head=new Uint8Array(await file.slice(0,10).arrayBuffer());
     if(head[0]!==0x49||head[1]!==0x44||head[2]!==0x33)return out;
     const ver=head[3];
-    const size=Math.min(synch(head,6),12*1024*1024);
-    const b=new Uint8Array(await file.slice(0,10+size).arrayBuffer());
+    const size=Math.min(synch(head,6),48*1024*1024);
+    let b=new Uint8Array(await file.slice(0,10+size).arrayBuffer());
+    out.fmt='ID3v2.'+ver;
+    if(head[5]&0x80)b=unsync(b);
     let pos=10;const end=b.length;
     if(ver>=3&&(head[5]&0x40)){
       const ext=ver===4?synch(b,pos):((b[pos]<<24)|(b[pos+1]<<16)|(b[pos+2]<<8)|b[pos+3])+4;
@@ -330,10 +345,26 @@ async function readID3(file){
       const id=String.fromCharCode(...b.subarray(pos,pos+idLen));
       let fs;
       if(ver===2)fs=(b[pos+3]<<16)|(b[pos+4]<<8)|b[pos+5];
-      else if(ver===4)fs=synch(b,pos+4);
+      else if(ver===4){
+        const fsS=synch(b,pos+4),fsB=((b[pos+4]<<24)|(b[pos+5]<<16)|(b[pos+6]<<8)|b[pos+7])>>>0;
+        const okNext=sz=>{const q=pos+10+sz;if(q+4>=end)return q<=end;return b[q]===0||/[A-Z0-9]/.test(String.fromCharCode(b[q]));};
+        fs=((b[pos+4]|b[pos+5]|b[pos+6]|b[pos+7])&0x80)?fsB:(okNext(fsS)?fsS:(okNext(fsB)?fsB:fsS));
+      }
       else fs=((b[pos+4]<<24)|(b[pos+5]<<16)|(b[pos+6]<<8)|b[pos+7])>>>0;
       if(fs<=0||pos+hLen+fs>end)break;
-      const d=b.subarray(pos+hLen,pos+hLen+fs);
+      let d=b.subarray(pos+hLen,pos+hLen+fs);
+      if(ver===4){
+        const f2=b[pos+9];
+        if(f2&0x0C){pos+=hLen+fs;continue;}
+        if(f2&0x40)d=d.subarray(1);
+        if(f2&0x02)d=unsync(d);
+        if(f2&0x01)d=d.subarray(4);
+      }else if(ver===3){
+        const f2=b[pos+9];
+        if(f2&0xC0){pos+=hLen+fs;continue;}
+        if(f2&0x20)d=d.subarray(1);
+      }
+      if(d.length<2){pos+=hLen+fs;continue;}
       if(id==='TIT2'||id==='TT2')out.title=dec(d.subarray(1),d[0]);
       else if(id==='TPE1'||id==='TP1')out.artist=dec(d.subarray(1),d[0]);
       else if(id==='TALB'||id==='TAL')out.album=dec(d.subarray(1),d[0]);
@@ -361,6 +392,7 @@ async function readID3(file){
       }
       pos+=hLen+fs;
     }
+    if(!out.cover){const c=scanImage(b);if(c)out.cover=c;}
   }catch(e){}
   return out;
 }
@@ -435,10 +467,11 @@ async function readTags(file){
     const h=new Uint8Array(await file.slice(0,12).arrayBuffer());
     const sig=String.fromCharCode(...h.subarray(0,4)),sig2=String.fromCharCode(...h.subarray(4,8));
     if(sig.startsWith('ID3'))return await readID3(file);
-    if(sig2==='ftyp')return await readMP4(file);
-    if(sig==='fLaC')return await readFLAC(file);
+    if(sig2==='ftyp'){const r=await readMP4(file);r.fmt='MP4/M4A';return r;}
+    if(sig==='fLaC'){const r=await readFLAC(file);r.fmt='FLAC';return r;}
+    return {fmt:'ohne Tag-Kopf ('+[...h.subarray(0,4)].map(x=>x.toString(16).padStart(2,'0')).join('')+')'};
   }catch(e){}
-  return {};
+  return {fmt:'Lesefehler'};
 }
 /* MP4-FLAC END */
 function getDuration(blob){return new Promise(res=>{
@@ -465,7 +498,7 @@ async function addFiles(fileList){
     try{
       const tags=await readTags(f);
       const base=f.name.replace(/\.[^.]+$/,'');
-      const meta={fileName:f.name,size:f.size,title:tags.title||base,artist:tags.artist||'',album:tags.album||'',cover:tags.cover||null,coverTried:true,duration:await getDuration(f),added:Date.now()+i,fav:false};
+      const meta={fileName:f.name,size:f.size,title:tags.title||base,artist:tags.artist||'',album:tags.album||'',cover:tags.cover||null,coverV:2,duration:await getDuration(f),added:Date.now()+i,fav:false};
       tracks.push(await saveTrack(meta,f));
       n++;
     }catch(e){failed++;if(e&&e.name==='QuotaExceededError'){toast('Speicher voll – Import abgebrochen',4000);break;}}
@@ -477,15 +510,16 @@ async function addFiles(fileList){
 }
 
 /* ---------- Cover nachladen ---------- */
+let lastMiss=[];
 async function rescanCovers(force){
-  let n=0;
+  let n=0;lastMiss=[];
   for(const t of tracks){
-    if(t.stream||t.cover||(t.coverTried&&!force))continue;
+    if(t.stream||t.cover||(t.coverV===2&&!force))continue;
     try{
       const blob=await req(db.transaction('blobs').objectStore('blobs').get(t.id));
-      if(blob){const tags=await readTags(blob);if(tags.cover){t.cover=tags.cover;n++;}if(!t.album&&tags.album)t.album=tags.album;}
+      if(blob){const tags=await readTags(blob);t.fmt=tags.fmt||'';if(tags.cover){t.cover=tags.cover;n++;}else lastMiss.push(tags.fmt||'?');if(!t.album&&tags.album)t.album=tags.album;}
     }catch(e){}
-    t.coverTried=true;await putTrack(t);
+    t.coverV=2;await putTrack(t);
   }
   if(n){render();const c=curTrack();if(c)updateNow(c);}
   return n;
@@ -1051,7 +1085,7 @@ $('#nbCreate').onclick=()=>openSheet('Erstellen',[
   {label:'🎶 Neue Playlist',fn:()=>{tab='pl';openPl=null;openGrp=null;render();newPlaylist();}},
   {label:'＋ Songs hinzufügen',fn:()=>$('#fi').click()},
   {label:'📁 Ordner hinzufügen',fn:()=>$('#fo').click()},
-  {label:'🖼 Cover neu einlesen',fn:async()=>{toast('Suche Cover…',99999);const n=await rescanCovers(true);toast(n?`${n} Cover gefunden`:'Keine neuen Cover in den Dateien gefunden',3500);}}
+  {label:'🖼 Cover neu einlesen',fn:async()=>{toast('Suche Cover…',99999);const n=await rescanCovers(true);toast((n?`${n} Cover gefunden`:'Keine neuen Cover gefunden')+(lastMiss.length?` · ${lastMiss.length} ohne Cover [${[...new Set(lastMiss)].join(', ')}]`:''),9000);}}
 ]);
 $('#sideNew').onclick=()=>{tab='pl';openPl=null;render();newPlaylist();};
 $('#now').onclick=()=>$('#full').classList.add('show');
