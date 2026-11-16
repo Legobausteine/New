@@ -552,7 +552,7 @@ async function addFiles(fileList){
     try{
       const tags=await readTags(f);
       const base=f.name.replace(/\.[^.]+$/,'');
-      const meta={fileName:f.name,size:f.size,title:tags.title||base,artist:tags.artist||'',album:tags.album||'',cover:tags.cover||null,coverV:2,duration:await getDuration(f),added:Date.now()+i,fav:false};
+      const meta={fileName:f.name,size:f.size,title:tags.title||base,artist:tags.artist||'',album:tags.album||'',cover:tags.cover||null,coverV:3,duration:await getDuration(f),added:Date.now()+i,fav:false};
       tracks.push(await saveTrack(meta,f));
       n++;
     }catch(e){failed++;if(e&&e.name==='QuotaExceededError'){toast('Speicher voll – Import abgebrochen',4000);break;}}
@@ -568,12 +568,12 @@ let lastMiss=[];
 async function rescanCovers(force){
   let n=0;lastMiss=[];
   for(const t of tracks){
-    if(t.stream||t.cover||(t.coverV===2&&!force))continue;
+    if(t.stream||t.cover||(t.coverV===3&&!force))continue;
     try{
       const blob=await req(db.transaction('blobs').objectStore('blobs').get(t.id));
       if(blob){const tags=await readTags(blob);t.fmt=tags.fmt||'';if(tags.cover){t.cover=tags.cover;n++;}else lastMiss.push(tags.fmt||'?');if(!t.album&&tags.album)t.album=tags.album;}
     }catch(e){}
-    t.coverV=2;await putTrack(t);
+    t.coverV=3;await putTrack(t);
   }
   if(n){render();const c=curTrack();if(c)updateNow(c);}
   return n;
@@ -1198,6 +1198,6 @@ async function updateInfo(){
 })();
 })();
 </script>
-<script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));</script>
+<script>if('serviceWorker' in navigator){addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));let had=!!navigator.serviceWorker.controller;navigator.serviceWorker.addEventListener('controllerchange',()=>{if(had&&!window.__rl){window.__rl=1;location.reload();}had=true;});}</script>
 </body>
 </html>
