@@ -1534,6 +1534,38 @@ $('#nbCreate').onclick=()=>openSheet('Erstellen',[
 $('#sideNew').onclick=()=>{tab='pl';openPl=null;render();newPlaylist();};
 $('#now').onclick=()=>$('#full').classList.add('show');
 $('#fclose').onclick=()=>$('#full').classList.remove('show');
+/* Vollbild-Player: nach unten wischen schließt ihn, der Song bleibt unten im Mini-Player */
+{
+  const f=$('#full');let y0=null,x0=0,dy=0,t0=0;
+  const reset=()=>{f.style.transition='';f.style.transform='';f.style.opacity='';};
+  f.addEventListener('touchstart',e=>{
+    if(e.target.closest&&e.target.closest('input[type=range]'))return;
+    y0=e.touches[0].clientY;x0=e.touches[0].clientX;dy=0;t0=Date.now();f.style.transition='none';
+  },{passive:true});
+  f.addEventListener('touchmove',e=>{
+    if(y0===null)return;
+    const d=e.touches[0].clientY-y0;
+    if(Math.abs(e.touches[0].clientX-x0)>Math.abs(d)&&d<30){y0=null;reset();return;}
+    dy=Math.max(0,d);
+    f.style.transform=`translateY(${dy}px) scale(${1-Math.min(dy,400)/4000})`;
+    f.style.opacity=String(1-Math.min(dy,500)/700);
+  },{passive:true});
+  f.addEventListener('touchend',()=>{
+    if(y0===null)return;
+    const fast=dy/Math.max(1,Date.now()-t0)>0.5;
+    y0=null;
+    if(dy>110||(fast&&dy>40)){
+      f.style.transition='transform .22s ease-out,opacity .22s';
+      f.style.transform='translateY(100%)';f.style.opacity='0';
+      setTimeout(()=>{f.classList.remove('show');reset();},220);
+    }else{
+      f.style.transition='transform .2s ease-out,opacity .2s';
+      f.style.transform='';f.style.opacity='';
+      setTimeout(reset,200);
+    }
+  });
+  f.addEventListener('touchcancel',()=>{y0=null;reset();});
+}
 $('#addFiles').onclick=()=>$('#fi').click();
 $('#addFolder').onclick=()=>$('#fo').click();
 $('#fc').onchange=async e=>{
