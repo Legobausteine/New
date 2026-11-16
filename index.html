@@ -14,7 +14,7 @@
 <style>
 :root{--bg:#0e0c0b;--card:#171412;--card2:#211d1a;--card3:#2b2622;--txt:#f6f1ea;--mut:#a0958a;--acc:#ffb347;--acc2:#ff7a45;--danger:#f87171;--line:#2a2420;--glass:#ffffff0d;--glass2:#ffffff17;--ease:cubic-bezier(.2,.8,.2,1)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;scrollbar-width:thin;scrollbar-color:#ffffff22 transparent}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+html,body{overscroll-behavior:none;margin:0;height:100%;background:var(--bg);color:var(--txt);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
 body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;display:flex;flex-direction:column;height:100dvh;overflow:hidden;background:radial-gradient(130% 50% at 50% -8%,#3d2513 0%,#1a110b 40%,transparent 72%),var(--bg)}
 input,textarea{-webkit-user-select:text;user-select:text}
 button{font-family:inherit}
@@ -130,6 +130,7 @@ input[type=range]::-moz-range-progress{background:var(--acc);height:6px;border-r
 footer{font-size:11px;color:var(--mut);text-align:center}
 /* Vollbild-Player */
 #full{position:fixed;inset:0;z-index:12;display:none;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:calc(20px + env(safe-area-inset-top)) 24px calc(22px + env(safe-area-inset-bottom));background:linear-gradient(180deg,var(--fc,#5a3214) 0%,#0e0c0b 80%)}
+#full{touch-action:none;overscroll-behavior:none}
 #full.show{display:flex;animation:sup .35s var(--ease)}
 #fclose{position:absolute;top:calc(14px + env(safe-area-inset-top));left:14px;background:#0005;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border:0;color:var(--txt);width:44px;height:44px;border-radius:50%;font-size:22px;cursor:pointer}
 #fcover{width:min(80vw,400px,42vh);aspect-ratio:1;border-radius:24px;background:var(--card2) center/cover no-repeat;display:grid;place-items:center;font-size:76px;color:var(--mut);box-shadow:0 34px 70px -20px #000d,0 0 0 1px #ffffff10}
