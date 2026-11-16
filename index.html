@@ -568,6 +568,8 @@ async function addFiles(fileList){
       const tags=await readTags(f);
       const base=f.name.replace(/\.[^.]+$/,'');
       const meta={fileName:f.name,size:f.size,title:tags.title||base,artist:tags.artist||'',album:tags.album||'',cover:tags.cover||null,coverV:4,duration:await getDuration(f),added:Date.now()+i,fav:false};
+      const nk=x=>(x||'').toLowerCase().replace(/\s+/g,' ').trim();
+      if(tracks.some(t=>nk(t.title)===nk(meta.title)&&nk(t.artist)===nk(meta.artist)&&(!t.duration||!meta.duration||Math.abs(t.duration-meta.duration)<=2))){skipped++;continue;}
       tracks.push(await saveTrack(meta,f));
       n++;
     }catch(e){failed++;if(e&&e.name==='QuotaExceededError'){toast('Speicher voll – Import abgebrochen',4000);break;}}
