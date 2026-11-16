@@ -14,6 +14,8 @@
 <style>
 :root{--bg:#14110f;--card:#1d1916;--card2:#272220;--txt:#f4efe8;--mut:#9a8f84;--acc:#ffb347;--acc2:#ff7a45;--danger:#f87171;--line:#2d2723}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+input,textarea{-webkit-user-select:text;user-select:text}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 body{display:flex;flex-direction:column;height:100dvh;overflow:hidden}
 header{padding:calc(12px + env(safe-area-inset-top)) 14px 6px;display:flex;flex-direction:column;gap:10px}
@@ -129,7 +131,9 @@ footer{font-size:11px;color:var(--mut);text-align:center}
 .h2.big{font-size:26px;margin-top:8px}
 .shelf{display:flex;gap:12px;overflow-x:auto;padding:2px 4px 12px;scrollbar-width:none}
 .shelf::-webkit-scrollbar{display:none}
-.sc{flex:0 0 140px;cursor:pointer;min-width:0}
+.sc{flex:0 0 140px;cursor:pointer;min-width:0;position:relative;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.sc.sel .im{box-shadow:0 0 0 2.5px var(--acc)}
+.sc .chk{position:absolute;top:8px;left:8px;background:#0009;border-color:#fff}
 .sc .im{width:140px;height:140px;border-radius:12px;background:var(--card2) center/cover no-repeat;display:grid;place-items:center;font-size:40px;color:#fff9}
 .sc .t{margin-top:8px;font-size:14px;font-weight:600}
 .sc .a{font-size:12.5px}
@@ -711,8 +715,8 @@ function render(){
 let sel=null,selItems=[],selView='',lpDone=false;
 const viewKey=()=>tab+'|'+openPl+'|'+openGrp;
 function refreshSel(){
-  document.querySelectorAll('.item').forEach(e=>e.classList.toggle('sel',!!sel&&e._id!==undefined&&sel.has(e._id)));
-  document.querySelectorAll('.item .chk').forEach(c=>{c.textContent=c.parentNode.classList.contains('sel')?'✓':'';});
+  document.querySelectorAll('.item,.sc').forEach(e=>e.classList.toggle('sel',!!sel&&e._id!==undefined&&sel.has(e._id)));
+  document.querySelectorAll('.item .chk,.sc .chk').forEach(c=>{c.textContent=c.parentNode.classList.contains('sel')?'✓':'';});
   const n=sel?sel.size:0;
   $('#selcnt').textContent=n===1?'1 Song ausgewählt':`${n} Songs ausgewählt`;
   $('#seldel').disabled=!n;
@@ -815,11 +819,23 @@ function shelf(list,title,cards){
   list.appendChild(el('div','h2',title));
   const s=el('div','shelf');cards.forEach(c=>s.appendChild(c));list.appendChild(s);
 }
-const trackCards=items=>items.map((t,i)=>card(t.title,t.artist||'Unbekannter Künstler',coverOf(t),(i*47+20)%360,()=>play(t,items)));
+const trackCards=items=>items.map((t,i)=>{
+  const c=card(t.title,t.artist||'Unbekannter Künstler',coverOf(t),(i*47+20)%360,()=>{});
+  c._id=t.id;c.insertBefore(el('div','chk'),c.firstChild);
+  if(!selItems.some(x=>x.id===t.id))selItems.push(t);
+  bindLongPress(c,t);
+  c.onclick=()=>{
+    if(lpDone){lpDone=false;return;}
+    if(sel){toggleSel(t.id);return;}
+    play(t,items);
+  };
+  return c;
+});
 function readRecent(){try{return JSON.parse(ls.get('om_recent')||'[]');}catch(e){return [];}}
 function recentTracks(){return readRecent().map(id=>tracks.find(t=>t.id===id)).filter(Boolean);}
 function pushRecent(t){if(t.stream)return;ls.set('om_recent',JSON.stringify([t.id,...readRecent().filter(x=>x!==t.id)].slice(0,20)));}
 function renderHome(list){
+  selItems=[];
   const h=new Date().getHours();
   list.appendChild(el('div','h2 big',h<5?'Gute Nacht':h<11?'Guten Morgen':h<18?'Guten Tag':'Guten Abend'));
   if(!tracks.length){list.appendChild(empty('Noch keine Musik','Tippe oben auf „＋ Songs“ und wähle Musik von deinem Gerät.'));return;}
