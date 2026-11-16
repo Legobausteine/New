@@ -256,6 +256,7 @@ footer{font-size:11px;color:var(--mut);text-align:center}
 <div class="ov" id="qsheet"><div class="box" id="qbox"></div></div>
 <input type="file" id="fi" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.opus,.weba" multiple hidden>
 <input type="file" id="fo" webkitdirectory multiple hidden>
+<input type="file" id="fc" accept="image/*" hidden>
 <audio id="audio" preload="auto"></audio>
 
 <script>
@@ -310,7 +311,7 @@ function dec(bytes,enc){
   }catch(e){return '';}
 }
 const synch=(b,o)=>(b[o]<<21)|(b[o+1]<<14)|(b[o+2]<<7)|b[o+3];
-async function readTags(file){
+async function readID3(file){
   const out={};
   try{
     const head=new Uint8Array(await file.slice(0,10).arrayBuffer());
@@ -336,6 +337,13 @@ async function readTags(file){
       if(id==='TIT2'||id==='TT2')out.title=dec(d.subarray(1),d[0]);
       else if(id==='TPE1'||id==='TP1')out.artist=dec(d.subarray(1),d[0]);
       else if(id==='TALB'||id==='TAL')out.album=dec(d.subarray(1),d[0]);
+      else if(id==='PIC'&&!out.cover){
+        const enc=d[0];const f=String.fromCharCode(...d.subarray(1,4)).toLowerCase();let i=5;
+        if(enc===0||enc===3){while(i<d.length&&d[i]!==0)i++;i++;}
+        else{while(i+1<d.length&&!(d[i]===0&&d[i+1]===0))i+=2;i+=2;}
+        const img=d.subarray(i);
+        if(img.length>100)out.cover=new Blob([img.slice()],{type:f==='png'?'image/png':'image/jpeg'});
+      }
       else if(id==='APIC'&&!out.cover){
         const enc=d[0];let i=1;
         while(i<d.length&&d[i]!==0)i++;
@@ -356,6 +364,83 @@ async function readTags(file){
   }catch(e){}
   return out;
 }
+/* MP4-FLAC START */
+const u8s=(b,a,e)=>new TextDecoder('utf-8').decode(b.subarray(a,e));
+function atoms(b,s,e){const r=[];let p=s;while(p+8<=e){const sz=((b[p]<<24)|(b[p+1]<<16)|(b[p+2]<<8)|b[p+3])>>>0;const ty=String.fromCharCode(b[p+4],b[p+5],b[p+6],b[p+7]);if(sz<8||p+sz>e)break;r.push({ty,s:p+8,e:p+sz});p+=sz;}return r;}
+function parseIlst(b,out){
+  const udta=atoms(b,0,b.length).find(a=>a.ty==='udta');if(!udta)return;
+  const meta=atoms(b,udta.s,udta.e).find(a=>a.ty==='meta');if(!meta)return;
+  const ilst=atoms(b,meta.s+4,meta.e).find(a=>a.ty==='ilst');if(!ilst)return;
+  for(const it of atoms(b,ilst.s,ilst.e)){
+    const d=atoms(b,it.s,it.e).find(a=>a.ty==='data');if(!d)continue;
+    const flags=(b[d.s+1]<<16)|(b[d.s+2]<<8)|b[d.s+3];
+    if(it.ty==='covr'){if(!out.cover&&d.e-d.s-8>100)out.cover=new Blob([b.slice(d.s+8,d.e)],{type:flags===14?'image/png':'image/jpeg'});}
+    else if(it.ty==='\u00a9nam')out.title=u8s(b,d.s+8,d.e).trim();
+    else if(it.ty==='\u00a9ART')out.artist=u8s(b,d.s+8,d.e).trim();
+    else if(it.ty==='\u00a9alb')out.album=u8s(b,d.s+8,d.e).trim();
+  }
+}
+async function readMP4(file){
+  const out={};
+  try{
+    let off=0;const total=file.size;
+    while(off+8<=total){
+      const hd=new DataView(await file.slice(off,off+16).arrayBuffer());
+      let size=hd.getUint32(0),hlen=8;
+      const type=String.fromCharCode(hd.getUint8(4),hd.getUint8(5),hd.getUint8(6),hd.getUint8(7));
+      if(size===1){if(hd.byteLength<16)break;size=Number(hd.getBigUint64(8));hlen=16;}
+      else if(size===0)size=total-off;
+      if(size<8)break;
+      if(type==='moov'){
+        if(size>40*1024*1024)break;
+        parseIlst(new Uint8Array(await file.slice(off+hlen,off+size).arrayBuffer()),out);break;
+      }
+      off+=size;
+    }
+  }catch(e){}
+  return out;
+}
+async function readFLAC(file){
+  const out={};
+  try{
+    let off=4;
+    while(off+4<=file.size){
+      const h=new Uint8Array(await file.slice(off,off+4).arrayBuffer());
+      const last=h[0]&0x80,type=h[0]&0x7f,len=(h[1]<<16)|(h[2]<<8)|h[3];
+      off+=4;
+      if(type===4&&len<2e6){
+        const b=new Uint8Array(await file.slice(off,off+len).arrayBuffer());const dv=new DataView(b.buffer);
+        let p=4+dv.getUint32(0,true);const n=dv.getUint32(p,true);p+=4;
+        for(let i=0;i<n&&p+4<=b.length;i++){
+          const l=dv.getUint32(p,true);p+=4;const str=u8s(b,p,p+l);p+=l;
+          const k=str.indexOf('=');if(k<0)continue;
+          const key=str.slice(0,k).toUpperCase(),val=str.slice(k+1).trim();
+          if(key==='TITLE')out.title=val;else if(key==='ARTIST')out.artist=val;else if(key==='ALBUM')out.album=val;
+        }
+      }else if(type===6&&!out.cover&&len<20e6){
+        const b=new Uint8Array(await file.slice(off,off+len).arrayBuffer());const dv=new DataView(b.buffer);
+        let p=4;const ml=dv.getUint32(p);p+=4;
+        const mime=String.fromCharCode(...b.subarray(p,p+ml));p+=ml;
+        const dl=dv.getUint32(p);p+=4+dl+16;
+        const pl=dv.getUint32(p);p+=4;
+        if(pl>100)out.cover=new Blob([b.slice(p,p+pl)],{type:mime||'image/jpeg'});
+      }
+      off+=len;if(last)break;
+    }
+  }catch(e){}
+  return out;
+}
+async function readTags(file){
+  try{
+    const h=new Uint8Array(await file.slice(0,12).arrayBuffer());
+    const sig=String.fromCharCode(...h.subarray(0,4)),sig2=String.fromCharCode(...h.subarray(4,8));
+    if(sig.startsWith('ID3'))return await readID3(file);
+    if(sig2==='ftyp')return await readMP4(file);
+    if(sig==='fLaC')return await readFLAC(file);
+  }catch(e){}
+  return {};
+}
+/* MP4-FLAC END */
 function getDuration(blob){return new Promise(res=>{
   const a=new Audio(),u=URL.createObjectURL(blob);
   const fin=d=>{URL.revokeObjectURL(u);res(d);};
@@ -380,7 +465,7 @@ async function addFiles(fileList){
     try{
       const tags=await readTags(f);
       const base=f.name.replace(/\.[^.]+$/,'');
-      const meta={fileName:f.name,size:f.size,title:tags.title||base,artist:tags.artist||'',album:tags.album||'',cover:tags.cover||null,duration:await getDuration(f),added:Date.now()+i,fav:false};
+      const meta={fileName:f.name,size:f.size,title:tags.title||base,artist:tags.artist||'',album:tags.album||'',cover:tags.cover||null,coverTried:true,duration:await getDuration(f),added:Date.now()+i,fav:false};
       tracks.push(await saveTrack(meta,f));
       n++;
     }catch(e){failed++;if(e&&e.name==='QuotaExceededError'){toast('Speicher voll – Import abgebrochen',4000);break;}}
@@ -390,6 +475,22 @@ async function addFiles(fileList){
   toast(`${n} hinzugefügt`+(skipped?`, ${skipped} schon vorhanden`:'')+(failed?`, ${failed} fehlgeschlagen`:''),3500);
   try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist();}catch(e){}
 }
+
+/* ---------- Cover nachladen ---------- */
+async function rescanCovers(force){
+  let n=0;
+  for(const t of tracks){
+    if(t.stream||t.cover||(t.coverTried&&!force))continue;
+    try{
+      const blob=await req(db.transaction('blobs').objectStore('blobs').get(t.id));
+      if(blob){const tags=await readTags(blob);if(tags.cover){t.cover=tags.cover;n++;}if(!t.album&&tags.album)t.album=tags.album;}
+    }catch(e){}
+    t.coverTried=true;await putTrack(t);
+  }
+  if(n){render();const c=curTrack();if(c)updateNow(c);}
+  return n;
+}
+let coverFor=null;
 
 /* ---------- Hilfsfunktionen ---------- */
 const fmt=s=>{if(!isFinite(s)||s<0)s=0;s=Math.floor(s);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');};
@@ -641,7 +742,7 @@ async function removeFromPl(id){
 }
 function itemMenu(t){
   const o=[{label:'▶ Als Nächstes spielen',fn:()=>playNext(t)},{label:'☰ Ans Ende der Warteschlange',fn:()=>enqueue(t)}];
-  if(!t.stream)o.push({label:'＋ Zu Playlist…',fn:()=>addToPlSheet(t)});
+  if(!t.stream){o.push({label:'＋ Zu Playlist…',fn:()=>addToPlSheet(t)});o.push({label:'🖼 Cover festlegen',fn:()=>{coverFor=t;$('#fc').click();}});}
   openSheet(t.title,o);
 }
 function openSheet(title,opts){
@@ -949,13 +1050,22 @@ document.querySelectorAll('.tab,.nb').forEach(b=>b.onclick=()=>{tab=b.dataset.ta
 $('#nbCreate').onclick=()=>openSheet('Erstellen',[
   {label:'🎶 Neue Playlist',fn:()=>{tab='pl';openPl=null;openGrp=null;render();newPlaylist();}},
   {label:'＋ Songs hinzufügen',fn:()=>$('#fi').click()},
-  {label:'📁 Ordner hinzufügen',fn:()=>$('#fo').click()}
+  {label:'📁 Ordner hinzufügen',fn:()=>$('#fo').click()},
+  {label:'🖼 Cover neu einlesen',fn:async()=>{toast('Suche Cover…',99999);const n=await rescanCovers(true);toast(n?`${n} Cover gefunden`:'Keine neuen Cover in den Dateien gefunden',3500);}}
 ]);
 $('#sideNew').onclick=()=>{tab='pl';openPl=null;render();newPlaylist();};
 $('#now').onclick=()=>$('#full').classList.add('show');
 $('#fclose').onclick=()=>$('#full').classList.remove('show');
 $('#addFiles').onclick=()=>$('#fi').click();
 $('#addFolder').onclick=()=>$('#fo').click();
+$('#fc').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';
+  if(!f||!coverFor)return;
+  const t=coverFor;coverFor=null;
+  t.cover=f.slice(0,f.size,f.type||'image/jpeg');
+  if(coverUrls.has(t.id)){URL.revokeObjectURL(coverUrls.get(t.id));coverUrls.delete(t.id);}
+  await putTrack(t);render();if(curK===t.k)updateNow(t);toast('Cover gespeichert');
+};
 $('#fi').onchange=e=>{addFiles(e.target.files);e.target.value='';};
 $('#fo').onchange=e=>{addFiles(e.target.files);e.target.value='';};
 $('#q').addEventListener('input',render);
@@ -993,6 +1103,7 @@ async function updateInfo(){
     db=await openDB();
     await loadAll();
     render();updateInfo();syncFav();
+    rescanCovers(false);
   }catch(e){
     $('#list').appendChild(empty('Speicher nicht verfügbar','Bitte die Datei in einem normalen (nicht privaten) Browserfenster öffnen.'));
   }
