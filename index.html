@@ -468,10 +468,64 @@ async function readTags(file){
     const sig=String.fromCharCode(...h.subarray(0,4)),sig2=String.fromCharCode(...h.subarray(4,8));
     if(sig.startsWith('ID3'))return await readID3(file);
     if(sig2==='ftyp'){const r=await readMP4(file);r.fmt='MP4/M4A';return r;}
+    if(sig==='OggS'){const r=await readOgg(file);r.fmt='Ogg/Opus';return r;}
     if(sig==='fLaC'){const r=await readFLAC(file);r.fmt='FLAC';return r;}
     return {fmt:'ohne Tag-Kopf ('+[...h.subarray(0,4)].map(x=>x.toString(16).padStart(2,'0')).join('')+')'};
   }catch(e){}
   return {fmt:'Lesefehler'};
+}
+function catU8(parts){let n=0;for(const x of parts)n+=x.length;const o=new Uint8Array(n);let p=0;for(const x of parts){o.set(x,p);p+=x.length;}return o;}
+function parsePicBlock(b){
+  const dv=new DataView(b.buffer,b.byteOffset,b.byteLength);
+  let p=4;const ml=dv.getUint32(p);p+=4;
+  const mime=String.fromCharCode(...b.subarray(p,p+ml));p+=ml;
+  const dl=dv.getUint32(p);p+=4+dl+16;
+  const pl=dv.getUint32(p);p+=4;
+  return pl>100?new Blob([b.slice(p,p+pl)],{type:mime&&mime.startsWith('image/')?mime:'image/jpeg'}):null;
+}
+function b64u8(str){const bin=atob(str.replace(/\s/g,''));const o=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)o[i]=bin.charCodeAt(i);return o;}
+async function readOgg(file){
+  const out={};
+  try{
+    let off=0,cur=[],packets=[];const total=file.size;
+    while(packets.length<2&&off+27<=total){
+      const h=new Uint8Array(await file.slice(off,off+27).arrayBuffer());
+      if(String.fromCharCode(h[0],h[1],h[2],h[3])!=='OggS')break;
+      const ns=h[26];
+      const seg=new Uint8Array(await file.slice(off+27,off+27+ns).arrayBuffer());
+      let plen=0;for(const v of seg)plen+=v;
+      const pay=new Uint8Array(await file.slice(off+27+ns,off+27+ns+plen).arrayBuffer());
+      let p=0;
+      for(const v of seg){
+        cur.push(pay.subarray(p,p+v));p+=v;
+        if(v<255){packets.push(catU8(cur));cur=[];if(packets.length>=2)break;}
+      }
+      off+=27+ns+plen;
+      if(off>80*1024*1024)break;
+    }
+    const b=packets[1];if(!b)return out;
+    let p=0;
+    const head=String.fromCharCode(...b.subarray(0,8));
+    if(head==='OpusTags')p=8;else if(b[0]===3&&String.fromCharCode(...b.subarray(1,7))==='vorbis')p=7;else return out;
+    const dv=new DataView(b.buffer,b.byteOffset,b.byteLength);
+    p+=4+dv.getUint32(p,true);
+    const n=dv.getUint32(p,true);p+=4;
+    for(let i=0;i<n&&p+4<=b.length;i++){
+      const l=dv.getUint32(p,true);p+=4;
+      let q=p;while(q<p+l&&b[q]!==61)q++;
+      const key=u8s(b,p,q).toUpperCase();
+      if(key==='METADATA_BLOCK_PICTURE'){
+        if(!out.cover){try{out.cover=parsePicBlock(b64u8(u8s(b,q+1,p+l)));}catch(e){}}
+      }else if(key==='COVERART'){
+        if(!out.cover){try{const im=b64u8(u8s(b,q+1,p+l));if(im.length>100)out.cover=new Blob([im],{type:im[0]===0x89?'image/png':'image/jpeg'});}catch(e){}}
+      }else{
+        const val=u8s(b,q+1,p+l).trim();
+        if(key==='TITLE')out.title=val;else if(key==='ARTIST')out.artist=val;else if(key==='ALBUM')out.album=val;
+      }
+      p+=l;
+    }
+  }catch(e){}
+  return out;
 }
 /* MP4-FLAC END */
 function getDuration(blob){return new Promise(res=>{
