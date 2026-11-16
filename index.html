@@ -1413,6 +1413,26 @@ $('#cf').onchange=async e=>{
   openConverter({blob:f,name:f.name,title:tg.title||f.name.replace(/\.[^.]+$/,''),artist:tg.artist||'',album:tg.album||'',cover:tg.cover||null});
 };
 
+async function convertFromLink(){
+  const u=(prompt('Direkter Link zu einer Audio-Datei (z. B. https://…/lied.wav):')||'').trim();
+  if(!u)return;
+  let url;try{url=new URL(u);}catch(e){toast('Das ist kein gültiger Link');return;}
+  if(!/^https?:$/.test(url.protocol)){toast('Nur http/https-Links');return;}
+  toast('Lade Datei…',99999);
+  try{
+    const r=await fetch(url.href);
+    if(!r.ok)throw new Error('Server antwortet mit '+r.status);
+    const blob=await r.blob();
+    const name=decodeURIComponent(url.pathname.split('/').pop()||'audio');
+    if(!(blob.type.startsWith('audio/')||AUDIO_EXT.test(name)))throw new Error('Der Link ist keine direkte Audio-Datei (Webseiten und Streaming-Links gehen nicht)');
+    const f=new File([blob],name,{type:blob.type});
+    const tg=await readTags(f);
+    $('#toast').classList.remove('show');
+    openConverter({blob:f,name,title:tg.title||name.replace(/\.[^.]+$/,''),artist:tg.artist||'',album:tg.album||'',cover:tg.cover||null});
+  }catch(e){
+    toast(e instanceof TypeError?'Der Server erlaubt keinen Abruf aus der App (Link öffnen, Datei speichern und über den Konverter wählen)':e.message,6000);
+  }
+}
 /* ---------- UI ---------- */
 document.querySelectorAll('.tab,.nb').forEach(b=>b.onclick=()=>{tab=b.dataset.tab==='lib'?'pl':b.dataset.tab;openPl=null;openGrp=null;render();$('#list').scrollTop=0;});
 $('#nbCreate').onclick=()=>openSheet('Erstellen',[
@@ -1420,6 +1440,7 @@ $('#nbCreate').onclick=()=>openSheet('Erstellen',[
   {label:'＋ Songs hinzufügen',fn:()=>$('#fi').click()},
   {label:'📁 Ordner hinzufügen',fn:()=>$('#fo').click()},
   {label:'🎧 MP3-Konverter (mit Coverbild)',fn:()=>$('#cf').click()},
+  {label:'🔗 Audio-Link in MP3 umwandeln',fn:convertFromLink},
   {label:'🧹 Doppelte Songs aufräumen',fn:cleanDupes},
   {label:'🖼 Cover neu einlesen',fn:async()=>{toast('Suche Cover…',99999);const n=await rescanCovers(true);toast((n?`${n} Cover gefunden`:'Keine neuen Cover gefunden')+(lastMiss.length?` · ${lastMiss.length} ohne Cover [${[...new Set(lastMiss)].join(', ')}] ${lastDiag.slice(0,220)}`:''),14000);}}
 ]);
