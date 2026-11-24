@@ -319,6 +319,7 @@ footer{font-size:11px;color:var(--mut);text-align:center}
 const $=s=>document.querySelector(s);
 const aLocal=$('#audio'),aLocal2=new Audio(),aStream=new Audio();aStream.preload='none';aLocal2.preload='auto';
 const urls=new Map();let stepping=false;
+const APP_VERSION='24.11.-nahtlos';
 let audio=aLocal;
 const AUDIO_EXT=/\.(mp3|m4a|aac|wav|flac|ogg|oga|opus|weba|wma|mp4)$/i;
 let db,tracks=[],playlists=[],ctx=[],results=[],curK=null,curUrl=null,shuffle=false,repeat=0,tab='home',openPl=null,openGrp=null;
@@ -1597,7 +1598,7 @@ async function convertFromLink(){
 }
 /* ---------- UI ---------- */
 document.querySelectorAll('.tab,.nb').forEach(b=>b.onclick=()=>{tab=b.dataset.tab==='lib'?'pl':b.dataset.tab;openPl=null;openGrp=null;render();$('#list').scrollTop=0;});
-$('#nbCreate').onclick=()=>openSheet('Erstellen',[
+$('#nbCreate').onclick=()=>openSheet('Erstellen · Version '+APP_VERSION,[
   {label:'🎶 Neue Playlist',fn:()=>{tab='pl';openPl=null;openGrp=null;render();newPlaylist();}},
   {label:'＋ Songs hinzufügen',fn:()=>$('#fi').click()},
   {label:'📁 Ordner hinzufügen',fn:()=>$('#fo').click()},
